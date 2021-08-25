@@ -5,6 +5,10 @@ import paho.mqtt.client as mqtt
 import requests
 import socket
 import queue
+import json
+from bluepy.btle import Scanner
+import subprocess
+
 
 def db_reader(db):
     print('DB STARTED')
@@ -17,6 +21,7 @@ def db_reader(db):
     global PORT
     global N_STATUS
     global C_STATUS
+    global BT_STATUS
     while True:
         try:
             cur.execute("SELECT * FROM Device")
@@ -37,6 +42,7 @@ def db_reader(db):
             conn.close()
             conn = sqlite3.connect('/usr/share/apache2/default-site/htdocs/Gateway_Manager/Gateway_Manager/test.db')
             cur=conn.cursor()
+        
         time.sleep(10)
         db.set()
     conn.close()
@@ -91,7 +97,8 @@ def c_MQTT(e_MQTT):
         data=''
         while e_MQTT.isSet():
             if not q.empty() and N_STATUS=='Active':
-                data='VAL:'+q.get()
+                #data='VAL:'+q.get()
+                data=json.dumps(q.get())
                 client.publish("Msg",data)
             elif N_STATUS=='Inactive':
                 data='NODE|DEVICE:Accelerometer|STATUS:'+N_STATUS
@@ -169,11 +176,29 @@ def app_node(db):
     i=1000
     FLG=db.wait()
     print("NODE STARTED")
+    global BT_STATUS
     while True:
         if N_STATUS=='Active':
+            #Accelerometer Section
             with open("/sys/devices/virtual/misc/FreescaleAccelerometer/data","r") as VAL:
                 r=str(VAL.readline())
-            if not q.full() and C_STATUS=='Active':
+            #BLE Section
+            bt=subprocess.check_output(['hciconfig'])
+            if b'UP' in bt:
+                BT_STATUS='Active'
+            else:
+                BT_STATUS='Inactive'
+            if BT_STATUS=='Active' and C_STATUS=='Active':
+                lescan=Scanner(0)
+                devices=lescan.scan(3)
+                for dev in devices:
+                    payload={'TYPE':'Beacon'}
+                    payload.update({'MAC':dev.addr,'MAC TYPE':dev.addrType,'RSSI':dev.rssi})
+                    for (adtype,desc,value) in dev.getScanData():
+                        payload.update({desc:value})
+                    if not q.full() and C_STATUS=='Active':
+                        q.put(payload,block=True,timeout=2)
+            elif not q.full() and C_STATUS=='Active' and BT_STATUS=='Inactive':
                 q.put(r,block=True,timeout=2)
                 #i=i+1
                 #if i>9999:
@@ -185,7 +210,7 @@ def app_node(db):
 
             
 if __name__=='__main__':
-    q=queue.Queue(10)
+    q=queue.Queue(18)
     #ACCELEROMETER ENABLED
     ENB=open("/sys/devices/virtual/misc/FreescaleAccelerometer/enable","w")
     ENB.write('1')
@@ -198,6 +223,7 @@ if __name__=='__main__':
     PORT=''
     N_STATUS=''
     C_STATUS=''
+    BT_STATUS=''
     db = threading.Event()
     e_MQTT=threading.Event()
     e_HTTP=threading.Event()
